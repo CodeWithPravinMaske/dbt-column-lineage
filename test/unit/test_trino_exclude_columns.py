@@ -57,3 +57,15 @@ def test_qualified_input_and_union_with_narrower_branch():
     """
     for col in ("id", "name"):
         assert _leaves_for(sql, col) == {("raw", "a"), ("other", "a")}
+
+
+def test_qualified_input_with_same_table_name_in_two_schemas():
+    # a bare `raw_cases` would raise SchemaError: Ambiguous mapping (swallowed -> lineage silently lost)
+    schema = {"db": {"analytics": {"raw_cases": {"id": "int", "rn": "int"}},
+                     "staging": {"raw_cases": {"id": "int", "rn": "int"}}}}
+    sql = """select z.id as case_id from (
+        select * from table(exclude_columns(input => table("db"."analytics"."raw_cases"), columns => DESCRIPTOR(rn)))
+    ) as z"""
+    parsed = unwrap_exclude_columns(parse_one(sql, dialect="trino"))
+    leaves = [n.expression for n in lineage("case_id", parsed, dialect="trino", schema=schema).walk() if not n.downstream]
+    assert [(t.db, t.name) for t in leaves] == [("analytics", "raw_cases")]
