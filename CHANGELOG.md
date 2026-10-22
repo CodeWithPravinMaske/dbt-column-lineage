@@ -30,6 +30,10 @@ for the full history prior to this file.
   (`sqlglot>=30,<31` at the time), so CI resolved the newest release and had been
   failing on `main` for both tests on every Python version. Both production call
   sites in `lineage.py` already pass `schema=`, so only the test needed updating.
+- On lowercase-normalizing dialects (trino, duckdb, ...) expanding an upstream column with (+)
+  no longer shows the same column twice (`insurancecardlist` and `INSURANCECARDLIST`). Upstream
+  column names are now upper-cased like the rest of the request path, so node rows and edge
+  handles always use one casing.
 
 ### Changed
 - CI now builds the frontend on Node 24 instead of Node 20 (end-of-life since
