@@ -14,10 +14,11 @@ from dbt_column_lineage.utils import get_dbt_project_dir
 
 
 def unwrap_exclude_columns(expression: Expression) -> Expression:
-    """Trino の `table(exclude_columns(input => table(x), columns => DESCRIPTOR(...)))` を `x` に置換する。
+    """Trino の `table(exclude_columns(input => table(x), columns => DESCRIPTOR(c)))` を
+    `(SELECT * EXCEPT (c) FROM x)` に置換する。
     sqlglot はこの polymorphic table function の出力カラムを解決できず、上流の `SELECT *` が
-    展開されないため lineage が Placeholder で止まる。列を除外するだけなので、残りのカラムの
-    リネージは `x` を直接読んだ場合と同じになる。"""
+    展開されないため lineage が Placeholder で止まる。`x` の修飾名(db.schema.x)は保持し、
+    除外列も `EXCEPT` で落とすので、UNION ALL の位置対応もずれない。"""
     for table in list(expression.find_all(exp.Table)):
         fn = table.this
         if not (isinstance(fn, exp.Anonymous) and fn.name.lower() == 'table' and fn.expressions):
@@ -25,13 +26,21 @@ def unwrap_exclude_columns(expression: Expression) -> Expression:
         inner = fn.expressions[0]
         if not (isinstance(inner, exp.Anonymous) and inner.name.lower() == 'exclude_columns'):
             continue
-        source = next((k.expression for k in inner.expressions
-                       if isinstance(k, exp.Kwarg) and k.this.name.lower() == 'input'), None)
-        if not (isinstance(source, exp.Anonymous) and source.name.lower() == 'table' and source.expressions):
+        kwargs = {k.this.name.lower(): k.expression for k in inner.expressions if isinstance(k, exp.Kwarg)}
+        source, descriptor = kwargs.get('input'), kwargs.get('columns')
+        if not (isinstance(source, exp.Anonymous) and source.name.lower() == 'table' and source.expressions
+                and isinstance(descriptor, exp.Anonymous) and descriptor.expressions):
             continue
         ref = source.expressions[0]
-        name = ref.this if isinstance(ref, exp.Column) else exp.to_identifier(ref.name)
-        table.set('this', name.copy())
+        if isinstance(ref, exp.Column):  # `a.b.c` は Column(this=c, table=b, db=a) として parse される
+            ref = exp.Table(this=ref.this, db=ref.args.get('table'), catalog=ref.args.get('db'))
+        else:
+            ref = exp.Table(this=exp.to_identifier(ref.name))
+        excluded = [exp.column(c.name) for c in descriptor.expressions]
+        subquery = exp.Select(expressions=[exp.Star(except_=excluded)]).from_(ref).subquery()
+        if table.args.get('alias'):
+            subquery.set('alias', table.args['alias'].copy())
+        table.replace(subquery)
     return expression
 
 

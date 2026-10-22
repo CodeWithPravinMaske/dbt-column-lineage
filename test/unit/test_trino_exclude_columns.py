@@ -37,3 +37,23 @@ def test_unwrap_exclude_columns_restores_lineage():
     parsed = unwrap_exclude_columns(parse_one(SQL, dialect="trino"))
     leaves = _leaves(parsed)
     assert leaves and all(isinstance(n.expression, exp.Table) and n.expression.name == "raw_cases" for n in leaves)
+
+
+def _leaves_for(sql, column):
+    parsed = unwrap_exclude_columns(parse_one(sql, dialect="trino"))
+    node = lineage(column, parsed, dialect="trino", schema=SCHEMA2)
+    return {(n.expression.name, n.expression.db) for n in node.walk() if not n.downstream and isinstance(n.expression, exp.Table)}
+
+
+SCHEMA2 = {"db": {"a": {"raw": {"id": "int", "rn": "int", "name": "text"},
+                        "other": {"id": "int", "name": "text"}}}}
+
+
+def test_qualified_input_and_union_with_narrower_branch():
+    # excluded column must not shift UNION ALL positional mapping; db.a.raw must keep its qualifiers
+    sql = """
+    with d as (select * from table(exclude_columns(input => table(db.a.raw), columns => DESCRIPTOR(rn))))
+    select * from (select * from d union all select * from db.a.other)
+    """
+    for col in ("id", "name"):
+        assert _leaves_for(sql, col) == {("raw", "a"), ("other", "a")}
